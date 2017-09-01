@@ -1,0 +1,12 @@
+[package]
+name = "exokernel"
+version = "0.1.0"
+authors = ["(Zenix) Han-Sheng Huang <zenixls2@gmail.com>"]
+
+[dependencies]
+time = "*"
+mioco = "*"
+docopt = "*"
+serde = "*"
+net2 = "*"
+serde_derive = "*"
