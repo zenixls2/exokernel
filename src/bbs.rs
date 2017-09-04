@@ -8,6 +8,7 @@ use std::result::Result;
 use mioco::tcp::{TcpStream};
 use std::io::{Read, BufWriter, Write, stdout};
 use protocols::telnet::*;
+use std::sync::mpsc::{channel, Sender, Receiver};
 use user::User;
 
 pub enum BBSError {
@@ -40,26 +41,36 @@ macro_rules! printflush {
 pub type BBSResult = Result<i32, BBSError>;
 
 pub fn run(stream: TcpStream) -> BBSResult {
+    let (tx, rx) = channel::<u8>();
     let mut user = User::new();
     let mut _stream = stream.try_clone().unwrap();
-    let mut writer = BufWriter::new(stream.try_clone().unwrap());
     mioco::spawn(move || {
-        reader_loop(&mut _stream, &mut user);
+        reader_loop(&mut _stream, &mut user, tx);
     });
-    writer_loop(&mut writer);
+    mioco::spawn(move || {
+        writer_loop(stream, rx);
+    });
     Ok(0)
 }
 
-fn writer_loop(writer: &mut BufWriter<TcpStream>) {
+fn writer_loop(stream: TcpStream, rx: Receiver<u8>) {
+    let mut _stream = stream.try_clone().unwrap();
+    let mut writer = BufWriter::new(stream.try_clone().unwrap());
     let _ = writer.write(&TELNET_INIT).unwrap();
     let _ = writer.write(&TELNET_RESIZABLE).unwrap();
     let _ = writeln!(writer, "Hello World");
     let _ = writer.flush();
+    loop {
+        let mut b = [rx.recv().unwrap()];
+        match b[0] {
+            IAC => break,
+            _ => _stream.write(&mut b),
+        };
+    }
 }
 
 
-
-fn reader_loop(stream: &mut TcpStream, user: &mut User) {
+fn reader_loop(stream: &mut TcpStream, user: &mut User, tx: Sender<u8>) {
     let mut state = State::Default;
     let mut byte: [u8; 1] = [0];
     loop {
@@ -68,7 +79,9 @@ fn reader_loop(stream: &mut TcpStream, user: &mut User) {
             Ok(0) => break,
             Ok(..) => {},
             Err(ref e) if e.kind() == ErrorKind::Interrupted => continue,
-            Err(e) => { println!("{}", e); break; },
+            Err(e) => {
+                println!("{}", e); break;
+            },
         }
         let b = byte[0];
         match state {
@@ -85,14 +98,17 @@ fn reader_loop(stream: &mut TcpStream, user: &mut User) {
                     BREAK => {},
                     DM => {},
                     NOP => {},
-                    SE => {/* TODO: process Negotiate */
+                    SE => {
                         state = State::Default;
                     },
                     EOR => {},
                     ABORT => {state = State::Default;},
                     SUSP => {state = State::Default;},
                     xEOF => {},
-                    _ => {println!("Not expected: {}", b);},
+                    _ => {
+                        println!("Not expected: {}", b);
+                        let _ = tx.send(b).unwrap();
+                    },
                 }
             },
             State::TTY => {
@@ -111,7 +127,10 @@ fn reader_loop(stream: &mut TcpStream, user: &mut User) {
                         state = State::Default;
                     },
                     IAC => {state = State::Default},
-                    _ => {println!("Not expected: {}", b);},
+                    _ => {
+                        println!("Not expected: {}", b);
+                        let _ = tx.send(b).unwrap();
+                    },
                 }
             },
             State::Negotiate => {
@@ -154,11 +173,15 @@ fn reader_loop(stream: &mut TcpStream, user: &mut User) {
                         }
                         state = State::Default;
                     }
-                    _ => {println!("Not expected: {}", b);}
+                    _ => {
+                        println!("Not expected: {}", b);
+                        let _ = tx.send(b).unwrap();
+                    }
                 }
             },
         }
         println!("{}", b);
     }
+    tx.send(IAC);
     println!("end");
 }
